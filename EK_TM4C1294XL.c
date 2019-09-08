@@ -94,7 +94,7 @@ const I2CSlave_Config I2CSlave_config[] = {
         .object = &i2cTivaSlaveObjects[0],
         .hwAttrs = &i2cTivaSlaveHWAttrs[0]
     },
-    {NULL, NULL}
+    {NULL, NULL, NULL}
 };
 
 void EK_TM4C1294XL_initI2CSlave(void)
