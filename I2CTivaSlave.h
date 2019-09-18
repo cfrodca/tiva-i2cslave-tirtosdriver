@@ -52,10 +52,6 @@ typedef struct I2CTivaSlave_Object {
          * Flag to determine when an ISR needs to perform a callback;
          */
         bool             callCallback:1;
-        /*
-         * Flag to determine when a transmit request is pending;
-         */
-        bool             tranReqIsr:1;
     } state;
 
     unsigned char        slaveAddress;     /* Slave address */
