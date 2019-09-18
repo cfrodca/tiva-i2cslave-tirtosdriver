@@ -101,6 +101,7 @@ static void I2CTivaSlave_hwiIntFxn(UArg arg)
     i2cstatus = I2CSlaveStatus(hwAttrs->baseAddr);
     status = I2CSlaveIntStatusEx(hwAttrs->baseAddr, true);
     I2CSlaveIntClearEx(hwAttrs->baseAddr, status);
+    I2CSlaveIntClear(hwAttrs->baseAddr);
 
     if (i2cstatus & I2C_SLAVE_ACT_RREQ) {
         if (status & I2C_SLAVE_INT_DATA) {
@@ -121,7 +122,6 @@ void I2CTivaSlave_init(I2CSlave_Handle handle)
     I2CTivaSlave_Object    *object = handle->object;
 
     object->state.opened = false;
-    object->state.tranReqIsr = false;
 }
 
 /*
@@ -229,6 +229,9 @@ int I2CTivaSlave_write(I2CSlave_Handle handle, const void *buffer, size_t size)
 {
     unsigned int                   key;
     I2CTivaSlave_Object           *object = handle->object;
+    I2CTivaSlave_HWAttrs const    *hwAttrs = handle->hwAttrs;
+    uint32_t                       status;
+    uint32_t                       writeCount;
 
     if (!size) {
         return 0;
@@ -249,27 +252,28 @@ int I2CTivaSlave_write(I2CSlave_Handle handle, const void *buffer, size_t size)
 
     Hwi_restore(key);
 
-    if (object->state.tranReqIsr) {
+    status = I2CSlaveStatus(hwAttrs->baseAddr);
+    if (status & I2C_SLAVE_ACT_TREQ) {
         writeData(handle);
-        object->state.tranReqIsr = false;
-        /* writeData have posted the object->writeSem Semaphore from the previous call.
-         * To clear this, we simply do a NO_WAIT pend on (binary) object->writeSem
-         * so that it resets the Semaphore count.
-         */
-        Semaphore_pend(Semaphore_handle(&object->writeSem), BIOS_NO_WAIT);
     }
+
+    Semaphore_pend(Semaphore_handle(&object->writeSem), BIOS_NO_WAIT);
 
     if (object->writeCount) {
         /* If writeMode is blocking, block and get the state. */
         /* Pend on semaphore and wait for Hwi to finish. */
         if (!Semaphore_pend(Semaphore_handle(&object->writeSem),
                 object->writeTimeout)) {
+            I2CSlaveIntClearEx(hwAttrs->baseAddr, I2C_SLAVE_INT_DATA);
+            I2CSlaveIntClear(hwAttrs->baseAddr);
             /* Semaphore timed out, make the write empty and log the write. */
-            object->writeCount = 0;
+            //object->writeCount = 0;
         }
     }
 
-    return (object->writeSize - object->writeCount);
+    writeCount = object->writeCount;
+    object->writeCount = 0;
+    return (object->writeSize - writeCount);
 }
 
 /*
@@ -386,8 +390,6 @@ static void writeData(I2CSlave_Handle handle)
     if (object->writeCount) {
         I2CSlaveDataPut(hwAttrs->baseAddr, *(writeOffset - object->writeCount));
         object->writeCount--;
-    } else {
-        object->state.tranReqIsr = true;
     }
 
     if (!object->writeCount) {
