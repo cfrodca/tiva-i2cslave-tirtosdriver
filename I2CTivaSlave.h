@@ -72,6 +72,8 @@ typedef struct I2CTivaSlave_Object {
     size_t               writeCount;       /* Number of bytes left to write */
     Semaphore_Struct     writeSem;         /* I2C write semaphore*/
     unsigned int         writeTimeout;     /* Timeout for write semaphore */
+    Clock_Struct         writeTimeoutClk;  /* Clock object to for write pending timeouts */
+    unsigned int         writePendTimeout; /* Timeout for pending write */
     I2CSlave_Callback    writeCallback;    /* Pointer to write callback */
 
     ti_sysbios_family_arm_m3_Hwi_Struct hwi;  /* Hwi object handle */
