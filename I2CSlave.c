@@ -22,6 +22,7 @@ static int I2CSlave_count = -1;
 const I2CSlave_Params I2CSlave_defaultParams = {
     I2CSLAVE_WAIT_FOREVER,    /* readTimeout */
     I2CSLAVE_WAIT_FOREVER,    /* writeTimeout */
+    100,                      /* writePendingTimeout */
     0x1D,                     /* address */
 };
 
