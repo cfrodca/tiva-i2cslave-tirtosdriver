@@ -41,6 +41,7 @@ int             I2CTivaSlave_write(I2CSlave_Handle handle, const void *buffer,
 
 /* Static functions */
 static void readBlockingTimeout(UArg arg);
+static Void writePendingTimeoutCallback(UArg arg);
 static bool readIsrBinaryBlocking(I2CSlave_Handle handle);
 static void readSemCallback(I2CSlave_Handle handle, void *buffer, size_t count);
 static int  readTaskBlocking(I2CSlave_Handle handle);
@@ -80,6 +81,7 @@ void I2CTivaSlave_close(I2CSlave_Handle handle)
     Hwi_destruct(&(object->hwi));
 
     Semaphore_destruct(&object->writeSem);
+    Clock_destruct(&object->writeTimeoutClk);
 
     Semaphore_destruct(&object->readSem);
     Clock_destruct(&object->timeoutClk);
@@ -101,7 +103,6 @@ static void I2CTivaSlave_hwiIntFxn(UArg arg)
     i2cstatus = I2CSlaveStatus(hwAttrs->baseAddr);
     status = I2CSlaveIntStatusEx(hwAttrs->baseAddr, true);
     I2CSlaveIntClearEx(hwAttrs->baseAddr, status);
-    I2CSlaveIntClear(hwAttrs->baseAddr);
 
     if (i2cstatus & I2C_SLAVE_ACT_RREQ) {
         if (status & I2C_SLAVE_INT_DATA) {
@@ -110,6 +111,7 @@ static void I2CTivaSlave_hwiIntFxn(UArg arg)
     }
 
     if (i2cstatus & I2C_SLAVE_ACT_TREQ) {
+        Log_print1(Diags_USER1, "SLV: write in isr %d", 1);
         writeData((I2CSlave_Handle)arg);
     }
 }
@@ -150,6 +152,7 @@ I2CSlave_Handle I2CTivaSlave_open(I2CSlave_Handle handle, I2CSlave_Params *param
 
     object->readTimeout          = params->readTimeout;
     object->writeTimeout         = params->writeTimeout;
+    object->writePendTimeout     = params->writePendingTimeout;
     object->slaveAddress         = params->slaveAddress;
     object->readFxns             = staticFxnTable;
 
@@ -188,13 +191,19 @@ I2CSlave_Handle I2CTivaSlave_open(I2CSlave_Handle handle, I2CSlave_Params *param
                     object->readTimeout,
                     &paramsUnion.clockParams);
 
+    /* Clock for pending writes */
+    Clock_construct(&object->writeTimeoutClk,
+                    writePendingTimeoutCallback,
+                    object->writePendTimeout,
+                    &paramsUnion.clockParams);
+
     I2CSlaveInit(hwAttrs->baseAddr, params->slaveAddress);
 
     /* Enable I2CSlave and its interrupt. */
     I2CSlaveIntClearEx(hwAttrs->baseAddr, I2C_SLAVE_INT_DATA);
 
-    I2CSlaveIntClear(hwAttrs->baseAddr);
     I2CSlaveEnable(hwAttrs->baseAddr);
+    I2CSlaveFIFODisable(hwAttrs->baseAddr);
 
     I2CSlaveIntEnableEx(hwAttrs->baseAddr, I2C_SLAVE_INT_DATA);
 
@@ -230,7 +239,6 @@ int I2CTivaSlave_write(I2CSlave_Handle handle, const void *buffer, size_t size)
     unsigned int                   key;
     I2CTivaSlave_Object           *object = handle->object;
     I2CTivaSlave_HWAttrs const    *hwAttrs = handle->hwAttrs;
-    uint32_t                       status;
     uint32_t                       writeCount;
 
     if (!size) {
@@ -238,6 +246,8 @@ int I2CTivaSlave_write(I2CSlave_Handle handle, const void *buffer, size_t size)
     }
 
     key = Hwi_disable();
+
+    Log_print1(Diags_USER1, "SLV: try write %d", 1);
 
     if (object->writeCount) {
         Hwi_restore(key);
@@ -252,8 +262,10 @@ int I2CTivaSlave_write(I2CSlave_Handle handle, const void *buffer, size_t size)
 
     Hwi_restore(key);
 
-    status = I2CSlaveStatus(hwAttrs->baseAddr);
-    if (status & I2C_SLAVE_ACT_TREQ) {
+    if (I2CSlaveStatus(hwAttrs->baseAddr) & I2C_SLAVE_ACT_TREQ) {
+        /* Stop clock if Write is pending */
+        Clock_stop(Clock_handle(&object->writeTimeoutClk));
+        Log_print1(Diags_USER1, "SLV: pendw %d", 1);
         writeData(handle);
     }
 
@@ -264,10 +276,10 @@ int I2CTivaSlave_write(I2CSlave_Handle handle, const void *buffer, size_t size)
         /* Pend on semaphore and wait for Hwi to finish. */
         if (!Semaphore_pend(Semaphore_handle(&object->writeSem),
                 object->writeTimeout)) {
-            I2CSlaveIntClearEx(hwAttrs->baseAddr, I2C_SLAVE_INT_DATA);
-            I2CSlaveIntClear(hwAttrs->baseAddr);
-            /* Semaphore timed out, make the write empty and log the write. */
-            //object->writeCount = 0;
+            Log_print1(Diags_USER1, "SLV: timeout %d", 1);
+
+        } else {
+            Log_print1(Diags_USER1, "SLV: write finish %d", 1);
         }
     }
 
@@ -287,6 +299,23 @@ static Void readBlockingTimeout(UArg arg)
 }
 
 /*
+ *  ======== writePendingTimeout ========
+ */
+static Void writePendingTimeoutCallback(UArg arg)
+{
+    I2CTivaSlave_Object *object = ((I2CSlave_Handle)arg)->object;
+    I2CTivaSlave_HWAttrs const    *hwAttrs = ((I2CSlave_Handle)arg)->hwAttrs;
+
+    if (I2CSlaveStatus(hwAttrs->baseAddr) & I2C_SLAVE_ACT_TREQ) {
+        Log_print1(Diags_USER1, "SLV: reset write %d", 1);
+
+        I2CSlaveDataPut(hwAttrs->baseAddr, 0);
+    }
+
+    Clock_stop(Clock_handle(&object->writeTimeoutClk));
+}
+
+/*
  *  ======== readIsrBinaryBlocking ========
  *  Function that is called by the ISR
  */
@@ -298,7 +327,10 @@ static bool readIsrBinaryBlocking(I2CSlave_Handle handle)
 
     readIn = I2CSlaveDataGet(hwAttrs->baseAddr);
 
+    Log_print1(Diags_USER1, "SLV: read in isr 0x%x", readIn);
+
     if (RingBuf_put(&object->ringBuffer, (unsigned char)readIn) == -1) {
+        Log_print1(Diags_USER1, "SLV: ring full %d", 1);
         return (false);
     }
 
@@ -326,10 +358,10 @@ static void readSemCallback(I2CSlave_Handle handle, void *buffer, size_t count)
  */
 static int readTaskBlocking(I2CSlave_Handle handle)
 {
-    unsigned char            readIn;
-    uintptr_t                key;
-    I2CTivaSlave_Object     *object = handle->object;
-    unsigned char           *buffer = object->readBuf;
+    unsigned char                  readIn;
+    uintptr_t                      key;
+    I2CTivaSlave_Object           *object = handle->object;
+    unsigned char                 *buffer = object->readBuf;
 
     object->state.bufTimeout = false;
     /*
@@ -348,6 +380,7 @@ static int readTaskBlocking(I2CSlave_Handle handle)
         key = Hwi_disable();
 
         if (RingBuf_get(&object->ringBuffer, &readIn) < 0) {
+            Log_print1(Diags_USER1, "SLV: read wait task %d", 1);
             object->state.callCallback = true;
             Hwi_restore(key);
 
@@ -358,6 +391,11 @@ static int readTaskBlocking(I2CSlave_Handle handle)
             Semaphore_pend(Semaphore_handle(&object->readSem),
                 BIOS_WAIT_FOREVER);
             if (object->state.bufTimeout == true) {
+                Log_print1(Diags_USER1, "SLV: read tou %d", 1);
+                /* Prevent accidental post in isr */
+                key = Hwi_disable();
+                object->state.callCallback = false;
+                Hwi_restore(key);
                 break;
             }
             RingBuf_get(&object->ringBuffer, &readIn);
@@ -366,12 +404,15 @@ static int readTaskBlocking(I2CSlave_Handle handle)
             Hwi_restore(key);
         }
 
+        Log_print1(Diags_USER1, "SLV: read in task 0x%x", readIn);
+
         *buffer = readIn;
         buffer++;
         /* In blocking mode, readCount doesn't not need a lock */
         object->readCount--;
     }
 
+    Log_print1(Diags_USER1, "SLV: read finish %d", 1);
     Clock_stop(Clock_handle(&object->timeoutClk));
     return (object->readSize - object->readCount);
 }
@@ -388,11 +429,18 @@ static void writeData(I2CSlave_Handle handle)
     writeOffset = (unsigned char *)object->writeBuf +
         object->writeSize * sizeof(unsigned char);
     if (object->writeCount) {
+        Log_print1(Diags_USER1, "SLV: write 0x%x", *(writeOffset - object->writeCount));
         I2CSlaveDataPut(hwAttrs->baseAddr, *(writeOffset - object->writeCount));
         object->writeCount--;
+    } else {
+        Log_print1(Diags_USER1, "SLV: wait write %d", 1);
+        if (object->readTimeout != 0) {
+            Clock_start(Clock_handle(&object->writeTimeoutClk));
+        }
     }
 
     if (!object->writeCount) {
+        Log_print1(Diags_USER1, "SLV: empty write %d", 1);
         object->writeCallback(handle, (void *)object->writeBuf,
             object->writeSize);
     }
