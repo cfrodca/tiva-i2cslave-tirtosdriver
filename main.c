@@ -74,6 +74,7 @@ Void exampleTask(UArg arg0, UArg arg1)
 
     i2cslaveParams.readTimeout = 10;
     i2cslaveParams.writeTimeout = 100;
+    i2cslaveParams.writePendingTimeout = 40;
     i2cslaveParams.slaveAddress = 0x1D;
 
     /* Open periph */
