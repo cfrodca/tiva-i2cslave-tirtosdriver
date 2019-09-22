@@ -30,6 +30,7 @@ In the main.c file, include the header I2CSlave.h
 ```
 Call function Board_initI2CSlave() within the main() function. Subsequently, in a task create the i2c slave object with its respective parameters. 
 ```
+I2CSlave_Params i2cslaveParams;    
 i2cslaveParams.readTimeout = 10;    // system ticks
 i2cslaveParams.writeTimeout = 100;  
 i2cslaveParams.writePendingTimeout = 40;  // Time that the Driver waits before writing a byte (0x00) in the bus. 
@@ -38,6 +39,7 @@ i2cslaveParams.slaveAddress = 0x1D;
 ```
 Open the peripheral
 ```
+I2CSlave_Handle i2cslaveHandle;
 i2cslaveHandle = I2CSlave_open(Board_I2CSlave5, &i2cslaveParams);
 if (i2cslaveHandle == NULL) {
     System_abort("Error opening the I2CSlave \n");
