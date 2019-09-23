@@ -53,3 +53,4 @@ Write a reply to the master
 ```
 I2CSlave_write(i2cslaveHandle, buffer, sizeof(buffer));
 ```
+Depending on the protocol implemented with the I2C, the master may or may not request a response from the slave. If the master requests an answer and the slave writes nothing on the I2C bus, the I2C bus can hang. To avoid this situation, the driver implements an automatic response using the writePendingTimeout parameter. If the slave does not send anything before writePendingTimeout milliseconds and the master requests a write, a 0x00 will be sent by the I2C bus.
