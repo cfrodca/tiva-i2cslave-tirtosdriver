@@ -264,9 +264,11 @@ int I2CTivaSlave_write(I2CSlave_Handle handle, const void *buffer, size_t size)
 
     if (I2CSlaveStatus(hwAttrs->baseAddr) & I2C_SLAVE_ACT_TREQ) {
         /* Stop clock if Write is pending */
-        Clock_stop(Clock_handle(&object->writeTimeoutClk));
-        Log_print1(Diags_USER1, "SLV: pendw %d", 1);
-        writeData(handle);
+        if (Clock_isActive(Clock_handle(&object->writeTimeoutClk))) {
+            Clock_stop(Clock_handle(&object->writeTimeoutClk));
+            Log_print1(Diags_USER1, "SLV: pendw %d", 1);
+            writeData(handle);
+        }
     }
 
     Semaphore_pend(Semaphore_handle(&object->writeSem), BIOS_NO_WAIT);
